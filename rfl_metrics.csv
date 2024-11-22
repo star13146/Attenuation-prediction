@@ -1,0 +1,8 @@
+"Weather.Type","RFL.RMSE..Specific.","RFL.RMSE..General.","RFL.R2..Specific.","RFL.R2..General."
+"Clear",0.38,0.42,0.981,0.973
+"Dust Storm",0.49,0.71,0.973,0.95
+"Fog",0.58,3.82,0.892,0.958
+"Drizzle",0.61,0.43,0.955,0.966
+"Rain",0.83,0.77,0.963,0.962
+"Snow",0.31,1,0.969,0.971
+"Showers",0.87,0.81,0.911,0.934
