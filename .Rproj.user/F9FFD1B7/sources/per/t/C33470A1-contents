@@ -1,0 +1,106 @@
+---
+title: "Method 2: RFL to FSO Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(randomForest)
+library(Metrics)
+library(caret)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(entropy)
+library(gridExtra)
+```
+
+## Threshold Logic
+```{r}
+find_threshold <- function(data_table, r2_threshold = 0.01, rmse_threshold = 0.02) {
+  for (i in 1:(nrow(data_table) - 1)) {
+    r2_decrease <- (data_table$R2[i] - data_table$R2[i + 1]) / data_table$R2[i]
+    rmse_increase <- (data_table$RMSE[i + 1] - data_table$RMSE[i]) / data_table$RMSE[i]
+    if (r2_decrease > r2_threshold && rmse_increase > rmse_threshold) {
+      return(i)
+    }
+  }
+  return(nrow(data_table))
+}
+```
+
+## Extract Selected Features
+```{r}
+extract_selected_features <- function(table) {
+  idx <- find_threshold(table)
+  if (idx >= 23) idx <- 14
+  table$Removed_Feature[idx:nrow(table)]
+}
+```
+
+##  Grouped Feature Selection
+```{r}
+# Example: fso_table_final and rfl_table_final must be loaded
+fso_important_features <- fso_table_final %>%
+  group_by(SYNOPCode) %>%
+  group_split() %>%
+  map(extract_selected_features)
+
+rfl_important_features <- rfl_table_final %>%
+  group_by(SYNOPCode) %>%
+  group_split() %>%
+  map(extract_selected_features)
+```
+
+##  Backward Feature Selection Function
+```{r}
+perform_feature_selection_generic <- function(df, target, param_random_state = 42) {
+  set.seed(param_random_state)
+  remaining_features <- setdiff(colnames(df), target)
+  results <- data.frame(Removed_Feature = character(), RMSE = numeric(), R2 = numeric())
+
+  while (length(remaining_features) > 1) {
+    rf <- randomForest(df[, remaining_features], df[[target]], importance = TRUE)
+    preds <- predict(rf, df[, remaining_features])
+    rmse_val <- rmse(df[[target]], preds)
+    r2_val <- R2(preds, df[[target]])
+    imp <- importance(rf, type = 1)
+    least_imp <- rownames(imp)[which.min(imp[, 1])]
+    results <- rbind(results, data.frame(Removed_Feature = least_imp, RMSE = rmse_val, R2 = r2_val))
+    remaining_features <- setdiff(remaining_features, least_imp)
+  }
+  list(feature_removal_log = results, threshold_index = find_threshold(results))
+}
+```
+
+##  Method 2 Pipeline
+```{r}
+method2_rfl_to_fso_generic <- function(train_data, test_data, rfl_model_generic, param_grid, random_state = 42) {
+  set.seed(random_state)
+  train_data$RFL_pred <- predict(rfl_model_generic, train_data)
+  test_data$RFL_pred <- predict(rfl_model_generic, test_data)
+
+  df_for_selection <- train_data %>%
+    select(-FSO_Att, -RFL_Att) %>%
+    mutate(FSO_Att = train_data$FSO_Att)
+
+  result <- perform_feature_selection_generic(df_for_selection, "FSO_Att")
+  threshold_idx <- result$threshold_index
+  feats_to_remove <- result$feature_removal_log$Removed_Feature[1:(threshold_idx + 1)]
+  final_features <- setdiff(colnames(df_for_selection)[-ncol(df_for_selection)], feats_to_remove)
+
+  rf_fso_final <- train(
+    x = train_data[, final_features],
+    y = train_data$FSO_Att,
+    method = "rf",
+    trControl = trainControl(method = "cv", number = 3),
+    tuneGrid = param_grid
+  )
+
+  fso_pred <- predict(rf_fso_final, test_data[, final_features])
+  correlation <- cor(fso_pred, test_data$RFL_pred)
+
+  list(model = rf_fso_final, features = final_features, log = result$feature_removal_log,
+       threshold_index = threshold_idx, correlation = correlation)
+}
+```

@@ -1,0 +1,183 @@
+## Load library and file
+
+```{r}
+library(randomForest)
+library(ggplot2)
+library(Metrics)
+library(caret)
+library(dplyr)
+
+data <- read.csv("Data/RFLFSODataFull.csv")
+
+```
+
+
+feature selection
+```{r}
+find_threshold <- function(data_table, r2_threshold = 0.01, rmse_threshold = 0.02) {
+  for (i in 1:(nrow(data_table) - 1)) {
+    r2_decrease <- (data_table$R2[i] - data_table$R2[i + 1]) / data_table$R2[i]
+    rmse_increase <- (data_table$RMSE[i + 1] - data_table$RMSE[i]) / data_table$RMSE[i]
+    if (r2_decrease < r2_threshold && rmse_increase > rmse_threshold) {
+      return(i)
+    }
+  }
+  return(NA)
+}
+
+```
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)  # or library(patchwork)
+
+plot_feature_selection <- function(rfl_table, fso_table, rfl_threshold = NULL, fso_threshold = NULL, title = "Feature Selection Performance") {
+  
+  plot_rfl <- ggplot(rfl_table, aes(x = Removed_Feature)) +
+    geom_line(aes(y = RMSE, color = "RMSE")) +
+    geom_line(aes(y = R2, color = "R2")) +
+    scale_y_continuous(
+      name = "Value",
+      sec.axis = dup_axis(name = "R2 (Secondary)")
+    ) +
+    labs(title = "RFL Feature Selection", x = "Removed Feature") +
+    scale_color_manual(values = c("RMSE" = "blue", "R2" = "red")) +
+    theme_minimal()
+
+  if (!is.null(rfl_threshold)) {
+    plot_rfl <- plot_rfl +
+      geom_vline(xintercept = rfl_threshold, linetype = "dashed", color = "black")
+  }
+
+  plot_fso <- ggplot(fso_table, aes(x = Removed_Feature)) +
+    geom_line(aes(y = RMSE, color = "RMSE")) +
+    geom_line(aes(y = R2, color = "R2")) +
+    scale_y_continuous(
+      name = "Value",
+      sec.axis = dup_axis(name = "R2 (Secondary)")
+    ) +
+    labs(title = "FSO Feature Selection", x = "Removed Feature") +
+    scale_color_manual(values = c("RMSE" = "blue", "R2" = "red")) +
+    theme_minimal()
+
+  if (!is.null(fso_threshold)) {
+    plot_fso <- plot_fso +
+      geom_vline(xintercept = fso_threshold, linetype = "dashed", color = "black")
+  }
+
+  grid.arrange(plot_rfl, plot_fso, ncol = 2, top = title)
+}
+
+```
+
+```{r}
+synop_codes <- c(
+  "0" = "clear",
+  "3" = "dust storm",
+  "4" = "fog",
+  "5" = "drizzle",
+  "6" = "rain",
+  "7" = "snow",
+  "8" = "showers"
+)
+```
+
+
+```{r}
+library(randomForest)
+library(Metrics)
+
+# Store results
+rfl_table_final <- data.frame(SYNOPCode = character(), Removed_Feature = character(), RMSE = numeric(), R2 = numeric())
+fso_table_final <- data.frame(SYNOPCode = character(), Removed_Feature = character(), RMSE = numeric(), R2 = numeric())
+
+# Assume synop_codes is a named vector like c("0" = "Clear", "3" = "Dust Storm", ...)
+for (code in names(synop_codes)) {
+  subset_data <- data[data$SYNOPCode == code, ]
+  
+  if (nrow(subset_data) < 100) {
+    cat("Skipping SYNOP code", code, "(", synop_codes[[code]], ") due to insufficient data.\n")
+    next
+  }
+  
+  target_features <- c("FSO_Att", "RFL_Att")
+  result_tables <- list()
+  
+  for (target in target_features) {
+    remaining_features <- setdiff(colnames(subset_data), target_features)
+    results <- data.frame(Removed_Feature = character(), RMSE = numeric(), R2 = numeric())
+    
+    while (length(remaining_features) > 1) {
+      rf <- randomForest(x = subset_data[, remaining_features],
+                         y = subset_data[[target]],
+                         importance = TRUE,
+                         keep.inbag = TRUE)
+      
+      preds <- predict(rf, subset_data[, remaining_features])
+      rmse_val <- rmse(subset_data[[target]], preds)
+      r2_val <- R2(preds, subset_data[[target]])
+      
+      # Save metrics before feature removal
+      results <- rbind(results, data.frame(
+        Removed_Feature = paste(remaining_features, collapse = ", "),
+        RMSE = rmse_val,
+        R2 = r2_val
+      ))
+      
+      # Remove least important feature
+      imp <- importance(rf, type = 1)
+      least_imp_feature <- rownames(imp)[which.min(imp[, 1])]
+      remaining_features <- setdiff(remaining_features, least_imp_feature)
+    }
+    
+    results$SYNOPCode <- code
+    
+    if (target == "RFL_Att") {
+      rfl_table_final <- rbind(rfl_table_final, results)
+    } else {
+      fso_table_final <- rbind(fso_table_final, results)
+    }
+  }
+}
+
+```
+
+
+## Final result for specific
+```{r}
+# Apply threshold identification on final result tables
+rfl_threshold <- find_threshold(rfl_table_final)
+fso_threshold <- find_threshold(fso_table_final)
+
+# Plot feature selection performance
+plot_feature_selection(
+  rfl_table = rfl_table_final,
+  fso_table = fso_table_final,
+  rfl_threshold = rfl_threshold,
+  fso_threshold = fso_threshold,
+  title = "Overall Feature Selection Performance"
+)
+
+```
+
+
+
+
+# General
+```{r}
+# General model for FSO_Att
+general_features <- setdiff(colnames(data), c("FSO_Att", "RFL_Att"))
+rf_fso <- randomForest(data[, general_features], data$FSO_Att, importance = TRUE)
+preds_fso <- predict(rf_fso, data[, general_features])
+rmse_fso <- rmse(data$FSO_Att, preds_fso)
+r2_fso <- R2(preds_fso, data$FSO_Att)
+
+# General model for RFL_Att
+rf_rfl <- randomForest(data[, general_features], data$RFL_Att, importance = TRUE)
+preds_rfl <- predict(rf_rfl, data[, general_features])
+rmse_rfl <- rmse(data$RFL_Att, preds_rfl)
+r2_rfl <- R2(preds_rfl, data$RFL_Att)
+
+```
+
